@@ -9,8 +9,65 @@ from threaddit.posts.models import (
     SavedPosts,
 )
 from threaddit.subthreads.models import Subscription, SubthreadInfo
+from threaddit.cache import (
+    get_user_post_votes,
+    get_multi_post_vote_counts,
+    set_post_vote_count,
+    set_user_vote,
+)
+from threaddit.reactions.models import Reactions
 
 posts = Blueprint("posts", __name__, url_prefix="/api")
+
+
+def load_user_votes_from_db(user_id):
+    reactions = Reactions.query.filter_by(user_id=user_id).all()
+    post_votes = {}
+    for reaction in reactions:
+        if reaction.post_id is not None:
+            post_votes[reaction.post_id] = reaction.is_upvote
+            set_user_vote(user_id, "post", reaction.post_id, reaction.is_upvote)
+    return post_votes
+
+
+def get_user_votes_for_posts(user_id):
+    if not user_id:
+        return None
+    cached_votes = get_user_post_votes(user_id)
+    if cached_votes is not None:
+        return cached_votes
+    return load_user_votes_from_db(user_id)
+
+
+def warm_vote_count_cache(post_infos):
+    post_ids = [p.post_id for p in post_infos]
+    cached_counts = get_multi_post_vote_counts(post_ids)
+    for pinfo in post_infos:
+        if pinfo.post_id not in cached_counts:
+            set_post_vote_count(pinfo.post_id, pinfo.post_karma)
+
+
+def serialize_post_list(post_infos, cur_user_id=None):
+    if not post_infos:
+        return []
+
+    warm_vote_count_cache(post_infos)
+
+    user_votes = get_user_votes_for_posts(cur_user_id) if cur_user_id else None
+    user_saved_posts = None
+
+    if cur_user_id:
+        saved_posts = SavedPosts.query.filter_by(user_id=cur_user_id).all()
+        user_saved_posts = {sp.post_id for sp in saved_posts}
+
+    return [
+        pinfo.as_dict(
+            cur_user=cur_user_id,
+            user_reactions=user_votes,
+            user_saved_posts=user_saved_posts,
+        )
+        for pinfo in post_infos
+    ]
 
 
 @posts.route("/posts/<feed_name>", methods=["GET"])
@@ -31,15 +88,21 @@ def get_posts(feed_name):
         threads = (thread.id for thread in SubthreadInfo.query.order_by(SubthreadInfo.posts_count.desc()).limit(25))
     else:
         return jsonify({"message": "Invalid Request"}), 400
-    post_list = [
-        pinfo.as_dict(cur_user=current_user.id if current_user.is_authenticated else None)
-        for pinfo in PostInfo.query.filter(PostInfo.thread_id.in_(threads))
+
+    post_infos = (
+        PostInfo.query.filter(PostInfo.thread_id.in_(threads))
         .order_by(sortBy)
         .filter(durationBy)
         .limit(limit)
         .offset(offset)
         .all()
-    ]
+    )
+
+    post_list = serialize_post_list(
+        post_infos,
+        cur_user_id=current_user.id if current_user.is_authenticated else None,
+    )
+
     return jsonify(post_list), 200
 
 
@@ -47,8 +110,12 @@ def get_posts(feed_name):
 def get_post(pid):
     post_info = PostInfo.query.filter_by(post_id=pid).first()
     if post_info:
+        post_list = serialize_post_list(
+            [post_info],
+            cur_user_id=current_user.id if current_user.is_authenticated else None,
+        )
         return (
-            jsonify({"post": post_info.as_dict()}),
+            jsonify({"post": post_list[0]}),
             200,
         )
     return jsonify({"message": "Invalid Post"}), 400
@@ -88,11 +155,15 @@ def update_post(pid):
     elif update_post.user_id != current_user.id:
         return jsonify({"message": "Unauthorized"}), 401
     update_post.patch(form_data, image)
+    post_list = serialize_post_list(
+        update_post.post_info,
+        cur_user_id=current_user.id,
+    )
     return (
         jsonify(
             {
                 "message": "Post udpated",
-                "new_data": update_post.post_info[0].as_dict(current_user.id),
+                "new_data": post_list[0] if post_list else None,
             }
         ),
         200,
@@ -129,15 +200,21 @@ def get_posts_of_thread(tid):
         sortBy, durationBy = get_filters(sortby=sortby, duration=duration)
     except Exception:
         return jsonify({"message": "Invalid Request"}), 400
-    post_list = [
-        pinfo.as_dict(current_user.id if current_user.is_authenticated else None)
-        for pinfo in PostInfo.query.filter(PostInfo.thread_id == tid)
+
+    post_infos = (
+        PostInfo.query.filter(PostInfo.thread_id == tid)
         .order_by(sortBy)
         .filter(durationBy)
         .limit(limit)
         .offset(offset)
         .all()
-    ]
+    )
+
+    post_list = serialize_post_list(
+        post_infos,
+        cur_user_id=current_user.id if current_user.is_authenticated else None,
+    )
+
     return jsonify(post_list), 200
 
 
@@ -151,15 +228,21 @@ def get_posts_of_user(user_name):
         sortBy, durationBy = get_filters(sortby=sortby, duration=duration)
     except Exception:
         return jsonify({"message": "Invalid Request"}), 400
-    post_list = [
-        pinfo.as_dict(current_user.id if current_user.is_authenticated else None)
-        for pinfo in PostInfo.query.filter(PostInfo.user_name == user_name)
+
+    post_infos = (
+        PostInfo.query.filter(PostInfo.user_name == user_name)
         .order_by(sortBy)
         .filter(durationBy)
         .limit(limit)
         .offset(offset)
         .all()
-    ]
+    )
+
+    post_list = serialize_post_list(
+        post_infos,
+        cur_user_id=current_user.id if current_user.is_authenticated else None,
+    )
+
     return jsonify(post_list), 200
 
 
@@ -169,11 +252,19 @@ def get_saved():
     limit = request.args.get("limit", default=20, type=int)
     offset = request.args.get("offset", default=0, type=int)
     saved_posts = SavedPosts.query.filter(SavedPosts.user_id == current_user.id).offset(offset).limit(limit).all()
-    post_infos = [PostInfo.query.filter_by(post_id=pid.post_id) for pid in saved_posts]
-    return (
-        jsonify([p.first().as_dict(current_user.id) for p in post_infos]),
-        200,
+
+    post_ids = [pid.post_id for pid in saved_posts]
+    if not post_ids:
+        return jsonify([]), 200
+
+    post_infos = PostInfo.query.filter(PostInfo.post_id.in_(post_ids)).all()
+
+    post_list = serialize_post_list(
+        post_infos,
+        cur_user_id=current_user.id,
     )
+
+    return jsonify(post_list), 200
 
 
 @posts.route("/posts/saved/<pid>", methods=["DELETE"])

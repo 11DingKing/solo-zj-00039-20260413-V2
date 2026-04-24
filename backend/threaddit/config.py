@@ -8,3 +8,4 @@ SECRET_KEY = os.environ.get("SECRET_KEY") or _env.get("SECRET_KEY", "dev-secret"
 CLOUDINARY_NAME = os.environ.get("CLOUDINARY_NAME") or _env.get("CLOUDINARY_NAME", "")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY") or _env.get("CLOUDINARY_API_KEY", "")
 CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET") or _env.get("CLOUDINARY_API_SECRET", "")
+REDIS_URL = os.environ.get("REDIS_URL") or _env.get("REDIS_URL", "redis://localhost:6379/0")

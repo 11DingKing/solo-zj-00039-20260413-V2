@@ -17,49 +17,81 @@ export default function Vote({ url, intitalVote, initialCount, contentID, type }
   const [vote, setVote] = useState(intitalVote);
   const [voteCount, setVoteCount] = useState(initialCount);
   const { isAuthenticated } = useAuthContext();
-  const { mutate } = useMutation({
-    mutationFn: async ({ vote, method, contentID }) => {
+
+  const { mutate, isPending } = useMutation({
+    mutationFn: async ({ vote: newVote, method, contentID }) => {
       switch (method) {
         case "put":
-          return axios.put(`${url}/${contentID}`, { is_upvote: vote }).then((res) => res.data);
+          return axios
+            .put(`${url}/${contentID}`, { is_upvote: newVote })
+            .then((res) => res.data);
         case "patch":
-          return axios.patch(`${url}/${contentID}`, { is_upvote: vote }).then((res) => res.data);
+          return axios
+            .patch(`${url}/${contentID}`, { is_upvote: newVote })
+            .then((res) => res.data);
         case "delete":
           return axios.delete(`${url}/${contentID}`).then((res) => res.data);
         default:
           break;
       }
     },
+    onSuccess: (data, variables) => {
+      const { vote: newVote } = variables;
+      if (data.current_vote !== undefined) {
+        setVote(data.current_vote);
+      } else {
+        setVote(newVote);
+      }
+      if (data.vote_delta !== undefined) {
+        setVoteCount((prev) => prev + data.vote_delta);
+      }
+    },
+    onError: (error) => {
+      console.error("Vote failed:", error);
+      alert(error.response?.data?.message || "Vote failed. Please try again.");
+    },
   });
+
   function handleVote(newVote) {
     if (!isAuthenticated) {
       return alert("You must be logged in to vote.");
     }
-    if (vote === null) {
-      mutate({ vote: newVote, method: "put", contentID });
-      setVoteCount((voteCount) => voteCount + (newVote ? 1 : -1));
-    } else if (newVote === null) {
-      mutate({ vote: newVote, method: "delete", contentID });
-      setVoteCount((voteCount) => voteCount - (vote ? 1 : -1));
-    } else {
-      mutate({ vote: newVote, method: "patch", contentID });
-      setVoteCount((voteCount) => voteCount + (newVote ? 2 : -2));
+
+    if (isPending) {
+      return;
     }
-    setVote(newVote);
+
+    let method;
+    if (vote === null) {
+      method = "put";
+    } else if (newVote === null) {
+      method = "delete";
+    } else {
+      method = "patch";
+    }
+
+    mutate({ vote: newVote, method, contentID });
   }
+
   return type === "mobile" ? (
     <>
       <Svg
         type="mobileVote"
-        className="w-5 h-5 md:w-6 md:h-6"
+        className={`w-5 h-5 md:w-6 md:h-6 ${isPending ? "opacity-50" : ""}`}
         defaultStyle={true}
         active={vote === true}
         onClick={() => handleVote(!vote ? true : null)}
       />
-      <p className={vote === true ? "text-theme-red-coral" : vote === false ? "text-sky-600" : ""}>{voteCount}</p>
+      <p
+        className={`${vote === true ? "text-theme-red-coral" : vote === false ? "text-sky-600" : ""} ${
+          isPending ? "opacity-50" : ""
+        }`}
+      >
+        {voteCount}
+      </p>
       <Svg
         type="mobileVote"
-        className="w-5 h-5 rotate-180 md:w-6 md:h-6"
+        className={`w-5 h-5 rotate-180 md:w-6 md:h-6 ${isPending ? "opacity-50" : ""}`}
         defaultStyle={false}
         active={vote === false}
         onClick={() => handleVote(vote === false ? null : false)}
@@ -67,7 +99,9 @@ export default function Vote({ url, intitalVote, initialCount, contentID, type }
     </>
   ) : (
     <>
-      <div className="px-5 py-0.5 bg-orange-100 rounded-md">
+      <div
+        className={`px-5 py-0.5 bg-orange-100 rounded-md ${isPending ? "opacity-50" : ""}`}
+      >
         <Svg
           type="down-arrow"
           defaultStyle={true}
@@ -77,11 +111,17 @@ export default function Vote({ url, intitalVote, initialCount, contentID, type }
         />
       </div>
       <p className="text-lg font-semibold">
-        <span className={vote === true ? "text-theme-red-coral" : vote === false ? "text-sky-600" : ""}>
+        <span
+          className={`${vote === true ? "text-theme-red-coral" : vote === false ? "text-sky-600" : ""} ${
+            isPending ? "opacity-50" : ""
+          }`}
+        >
           {voteCount}
         </span>
       </p>
-      <div className="px-5 py-0.5 bg-blue-50 rounded-md group">
+      <div
+        className={`px-5 py-0.5 bg-blue-50 rounded-md group ${isPending ? "opacity-50" : ""}`}
+      >
         <Svg
           type="down-arrow"
           className="w-10 h-10"
